@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+# kate: syntax python; space-indent on; indent-width 4;
+
+'''
+watchit 1.0.0 (2021-02-02)
+
+SPDX-FileCopyrightText: 2018-2021 Mirian Margiani
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+@package py
+'''
+
+import argparse
+import time
+from datetime import datetime as dt
+import os
+import sys
+import re
+import fnmatch
+from typing import NoReturn
+
+# NOTE pyinotify is a soft dependency and will only be imported if
+# not using polling. Using the watcher is the default, though.
+
+
+class Kind:
+    MODIFY = 0
+    ADD = 1
+    REMOVE = 2
+
+    ERROR = 100
+    DEBUG = 200
+    INFO = 300
+    WARN = 400
+
+
+class Options:
+    FOR_MACHINES = False
+    DEBUG = False
+    LOGSTR = {
+        Kind.MODIFY: '*',
+        Kind.ADD: '+',
+        Kind.REMOVE: '-',
+        Kind.ERROR: 'E',
+        Kind.DEBUG: 'D',
+        Kind.WARN: 'W',
+        Kind.INFO: 'I',
+        }
+
+
+def log(kind: Kind, message: str):
+    if kind == Kind.DEBUG and not Options.DEBUG:
+        return
+
+    if kind not in Options.LOGSTR:
+        print(f"programming error: invalid log kind argument '{kind}'", file=sys.stderr)
+        sys.exit(222)
+
+    channel = sys.stderr
+    if kind in [Kind.MODIFY, Kind.ADD, Kind.REMOVE]:
+        channel = sys.stdout
+
+    if Options.FOR_MACHINES:
+        print(f"{dt.now().strftime('%FT%T')} {Options.LOGSTR[kind]} {message}", file=channel)
+    else:
+        print(f"[{dt.now().strftime('%F %T')}] {Options.LOGSTR[kind]} {message}", file=channel)
+
+
+class TranslateGlob(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        log(Kind.DEBUG, f'setting globs: d={self.dest}, v={values}, ' +
+            f'a={getattr(namespace, self.dest)}')
+        for val in values:
+            if not hasattr(namespace, self.dest) or getattr(namespace, self.dest) is None:
+                setattr(namespace, self.dest, [fnmatch.translate(val)])
+            else:
+                if type(getattr(namespace, self.dest)) is str:
+                    setattr(namespace, self.dest, [getattr(namespace, self.dest)])
+                getattr(namespace, self.dest).append(fnmatch.translate(val))
+
+
+class Feedback:
+    CONTINUED = False
+    SUCCESS_ONLY = False
+
+    @classmethod
+    def notify(cls, kind: Kind, pathname: str) -> NoReturn:
+        log(kind, pathname)
+
+        if not cls.CONTINUED:
+            if cls.SUCCESS_ONLY:
+                sys.exit(0)
+            else:
+                sys.exit(kind)
+
+
+def polling(files: list, interval: int, timeout: int) -> NoReturn:
+    removed_files = []
+    start = dt.now().timestamp()
+
+    while True:
+        prev_time = {}
+
+        # collect timestamps
+        removed_indices = []
+        for i, file in enumerate(files):
+            try:
+                prev_time[file] = os.stat(file).st_mtime
+            except FileNotFoundError:
+                Feedback.notify(Kind.REMOVE, file)
+                removed_files.append(file)
+                removed_indices.append(i)
+                del prev_time[file]
+
+        # remove removed files from list of checked files
+        if removed_indices:
+            files = [x for i, x in enumerate(files) if i not in removed_indices]
+            removed_indices = []
+
+        time.sleep(interval)
+
+        # check if any timestamp has changed
+        for i, file in enumerate(files):
+            try:
+                new_time = os.stat(file).st_mtime
+            except FileNotFoundError:
+                Feedback.notify(Kind.REMOVE, file)
+                removed_files.append(file)
+                removed_indices.append(i)
+
+            if new_time != prev_time[file]:
+                Feedback.notify(Kind.MODIFY, file)
+
+        # remove removed files from list of checked files
+        if removed_indices:
+            files = [x for i, x in enumerate(files) if i not in removed_indices]
+
+        # check if any previously removed file has returned
+        revived_indices = []
+        for i, file in enumerate(removed_files):
+            try:
+                stat = os.stat(file)
+                Feedback.notify(Kind.ADD, file)
+                files.append(file)
+                revived_indices.append(i)
+            except FileNotFoundError:
+                pass
+
+        # remove revived files from list of checked files
+        if revived_indices:
+            removed_files = [x for i, x in enumerate(removed_files) if i not in revived_indices]
+
+        now = dt.now().timestamp()
+        # log(Kind.DEBUG, f"timeout: {now}, {start}, {timeout}, {now-start}")
+        if timeout > 0 and now-start >= timeout:
+            log(Kind.DEBUG, f"timeout passed: {now}-{start} = {now-start} >= {timeout}")
+            break
+
+
+def watching(files: list, recursive: bool, pattern: str, timeout: int) -> NoReturn:
+    pattern = re.compile(pattern)  # prepare pattern regex
+
+    try:
+        from pyinotify import WatchManager, ProcessEvent, Notifier
+        from pyinotify import WatchManagerError, PyinotifyError
+        from pyinotify import ALL_EVENTS, IN_DELETE, IN_DELETE_SELF, IN_CREATE, IN_CLOSE_WRITE
+        from pyinotify import IN_MOVE_SELF, IN_MOVED_FROM
+    except ModuleNotFoundError:
+        log(Kind.ERROR, "watching requires pyinotify, use polling instead (-p)")
+        return 255
+
+    class Added(Exception):
+        pass
+
+    class Deleted(Exception):
+        pass
+
+    class Changed(Exception):
+        pass
+
+    class Process(ProcessEvent):
+        def __init__(self, manager):
+            self.manager = manager
+
+        def print_debug(self, event):
+            if pattern.match(event.pathname):
+                log(Kind.DEBUG, f"event {event.maskname}: {event.pathname} (matched: {pattern})")
+            else:
+                log(Kind.DEBUG, f"event {event.maskname}: {event.pathname} (no match: {pattern})")
+
+        def process_IN_CREATE(self, event):
+            self.print_debug(event)
+            if pattern.match(event.pathname):
+                raise Added(event.pathname)
+
+        def process_IN_MOVED_TO(self, event):
+            # MOVED_FROM and MOVED_TO will be called (in this order)
+            # when a file in a watched directory is being renamed.
+            # We cannot properly handle this, though, because we treat
+            # MOVED_FROM as DELETE, which raises an exception - thus MOVED_TO
+            # will never be handled. We have to do it this way because we
+            # want to catch files that have been moved away, e.g. to the trash.
+            # We will not receive a MOVED_TO signal in such cases.
+            self.print_debug(event)
+            self.process_IN_CREATE(event)
+
+        def process_IN_DELETE(self, event):
+            self.print_debug(event)
+            if event.pathname.endswith('-unknown-path'):
+                path = event.pathname[0:-13]
+            else:
+                path = event.pathname
+
+            if pattern.match(path):
+                raise Deleted(path)
+
+        def process_IN_DELETE_SELF(self, event):
+            self.print_debug(event)
+            self.process_IN_DELETE(event)
+
+        def process_IN_MOVE_SELF(self, event):
+            self.print_debug(event)
+            self.process_IN_DELETE(event)
+
+        def process_IN_MOVED_FROM(self, event):
+            self.print_debug(event)
+            self.process_IN_DELETE(event)
+
+        def process_IN_CLOSE_WRITE(self, event):
+            self.print_debug(event)
+            if pattern.match(event.pathname):
+                raise Changed(event.pathname)
+
+        def process_default(self, event):
+            self.print_debug(event)
+
+    watcher = WatchManager()
+    notifier = Notifier(watcher, Process(watcher))
+
+    for f in files:
+        if os.path.exists(f):
+            # files that not exist have been deleted while the script was
+            # running; this is fine
+            watcher.add_watch(f, ALL_EVENTS, rec=recursive, auto_add=recursive, quiet=False)
+
+    start = dt.now().timestamp()
+    poll_timeout = None if not timeout else (timeout*1000-500)
+
+    while True:
+        try:
+            notifier.process_events()
+            if notifier.check_events(poll_timeout):
+                notifier.read_events()
+        except Changed as e:
+            Feedback.notify(Kind.MODIFY, e.args[0])
+        except Added as e:
+            Feedback.notify(Kind.ADD, e.args[0])
+        except Deleted as e:
+            Feedback.notify(Kind.REMOVE, e.args[0])
+        except KeyboardInterrupt:
+            notifier.stop()
+            break
+
+        now = dt.now().timestamp()
+        # log(Kind.DEBUG, f"timeout: {now}, {start}, {timeout}, {now-start}")
+        if timeout > 0 and now-start >= timeout:
+            log(Kind.DEBUG, f"timeout passed: {now}-{start} = {now-start} >= {timeout}")
+            break
+
+
+if __name__ == '__main__':
+    formatter = formatter = lambda prog: argparse.ArgumentDefaultsHelpFormatter(prog, width=70)
+    descr = 'Wait until files are modified. Exit if a ' \
+            'file has changed, return 0=changed, 1=added, 2=removed. ' \
+            'Use a while-loop to wait until a change occurs, or use ' \
+            'a named pipe as source for a loop in continuous mode (-c).'
+
+    parser = argparse.ArgumentParser(description=descr, formatter_class=formatter)
+    parser.epilog = 'Known Issue: renamed files will always be treated as if they ' \
+                    'were removed. Also note that the polling mechanism is seriously ' \
+                    'limited: it only supports watching explicitly specified files for ' \
+                    'changes. Use the file system watcher if you want to watch directories, ' \
+                    'patterns, and want to detect added and removed files.'
+
+    type_group = parser.add_mutually_exclusive_group(required=True)
+    type_group.add_argument('--polling', '-p', action='store_true',
+                            help='use polling instead of watching for file system events; ' +
+                                 'does not support watching directories')
+    type_group.add_argument('--watcher', '-w', action='store_true', default=True,
+                            help='watch for file system events using pyinotify ' +
+                                 '(external dependency)')
+
+    parser.add_argument('--continued', '-c', action='store_true',
+                        help='continue watching after a change has occurred')
+    parser.add_argument('--success', '-s', action='store_true',
+                        help='return 0 on any change (instead of 0=changed, 1=added, 2=removed)')
+    default_interval = 1
+    parser.add_argument('--interval', '-i', action='store', default=default_interval,
+                        const=default_interval, nargs='?', type=int,
+                        help='interval in seconds to use when polling (-p) or time for one ' +
+                        'run when watching in continuous mode (-c -w)')
+    default_watch_time = 0
+    parser.add_argument('--timeout', '-I', action='store', default=default_watch_time,
+                        const=default_watch_time, nargs='?', type=int,
+                        help='time limit in seconds for one run when watching or polling ' +
+                        'in continuous mode (-c); disabled with 0')
+    parser.add_argument('--no-recursive', '-R', action='store_true',
+                        help='do not watch directories recursively when using the watcher (-w)')
+
+    default_pattern = '.*'
+    parser.add_argument('-x', '--regex', dest='patterns', default=[default_pattern], nargs="*",
+                        help='watch for files matching this regex (requires -w)')
+    parser.add_argument('-g', '--glob', dest='globs', action=TranslateGlob, nargs="*", default=[],
+                        help='watch for files matching this glob pattern (requires -w)')
+
+    parser.add_argument('--machine-readable', '-m', action='store_true',
+                        help='print messages in a machine-readable format ' +
+                        '("<time> <type> <file>")')
+    parser.add_argument('--debug', '-d', action='store_true',
+                        help='print detailed info for all events')
+    parser.add_argument('files', type=str, nargs='+', help='files and/or directories to watch')
+
+    args = parser.parse_args()
+
+    # setup global options
+    if args.machine_readable:
+        Options.FOR_MACHINES = True
+
+    if args.debug:
+        Options.DEBUG = True
+
+    Feedback.CONTINUED = args.continued
+    Feedback.SUCCESS_ONLY = args.success
+
+    # merge glob patterns and regex patterns
+    if args.globs:
+        args.patterns += args.globs
+
+    if len(args.patterns) > 0:
+        log(Kind.DEBUG, f'raw patterns: {args.patterns}')
+        if len(args.patterns) > 1 and args.patterns[0] == '.*':
+            del args.patterns[0]
+
+        combined_patterns = [f'({x})' for x in args.patterns]
+        combined_patterns = '|'.join(combined_patterns)
+        log(Kind.DEBUG, f'combined patterns: {combined_patterns}')
+
+    # check for invalid argument combinations
+    fail = False
+    if args.polling:
+        if args.no_recursive:
+            log(Kind.INFO, "-R ignored as polling does not support directories anyway")
+        if len(args.patterns) > 1 or (len(args.patterns) == 1 and
+                                      args.patterns[0] != default_pattern):
+            log(Kind.INFO, "patterns ignored when polling as all files are given explicitly")
+    else:
+        if args.interval != default_interval:
+            log(Kind.ERROR, "watching does not support a custom interval, did you mean -I?")
+            fail = True
+
+    if args.timeout > 0 and not args.continued:
+        log(Kind.DEBUG, "continuous mode implicitly enabled")
+        args.continued = True
+
+    exit = 0
+    if args.polling:
+        for it in args.files:
+            if not os.path.exists(it):
+                log(Kind.ERROR, f"file or directory '{it}' does not exist")
+                fail = True
+            elif os.path.isdir(it):
+                log(Kind.ERROR, f"polling does not support directories ('{it}')")
+                fail = True
+
+        if fail:
+            exit = 255
+        else:
+            try:
+                # exits if necessary
+                polling(args.files, args.interval, args.timeout)
+            except KeyboardInterrupt:
+                exit = 128
+    else:
+        for it in args.files:
+            if not os.path.exists(it):
+                log(Kind.ERROR, f"file or directory '{it}' does not exist")
+                fail = True
+
+        if fail:
+            exit = 255
+        else:
+            # exits if necessary
+            watching(args.files, not args.no_recursive, combined_patterns, args.timeout)
+
+    sys.exit(exit)
