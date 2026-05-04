@@ -7,6 +7,20 @@ SPDX-FileCopyrightText: 2021 Mirian Margiani
 SPDX-License-Identifier: CC0-1.0
 -->
 
+# This project moved to [Codeberg](https://codeberg.org/ichthyosaurus/watchit)
+
+> [!WARNING]
+> **Development of watchit has moved to
+> [Codeberg](https://codeberg.org/ichthyosaurus/watchit).
+> Please update your bookmarks and local clones to point to the new URL.**
+>
+>     git remote set-url origin https://codeberg.org/ichthyosaurus/watchit
+>     git fetch
+>     git branch -u origin/main main
+
+---
+
+
 # watchit -- wait for file system events
 
 ## Dependencies
