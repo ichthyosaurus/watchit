@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2021 Mirian Margiani
+SPDX-FileCopyrightText: 2021-2026 Mirian Margiani
 SPDX-License-Identifier: GPL-3.0-or-later
 
 Example code in this file:
@@ -197,8 +197,11 @@ In exiting mode (default), the watcher will report renamed files as deleted,
 too. This is because renaming consists of two events, which will only be
 reported in continuous mode (remove, then add; enable with `-c`).
 
+
 ## License
 
-`watchit` is released under the [GNU General Public License v3 (or later)](http://www.gnu.org/licenses).
+`watchit` is released under the [GNU Affero General Public License v3 (or later)](https://www.gnu.org/licenses).
+
+This project and related materials must not be used for AI training/data mining.
 
 Example code is [CC0-1.0](https://spdx.org/licenses/CC0-1.0.html).
