@@ -47,7 +47,7 @@ class Options:
         Kind.DEBUG: 'D',
         Kind.WARN: 'W',
         Kind.INFO: 'I',
-        }
+    }
 
 
 def log(kind: Kind, message: str):
@@ -86,7 +86,7 @@ class Feedback:
     SUCCESS_ONLY = False
 
     @classmethod
-    def notify(cls, kind: Kind, pathname: str) -> NoReturn:
+    def notify(cls, kind: Kind, pathname: str) -> [None, NoReturn]:
         log(kind, pathname)
 
         if not cls.CONTINUED:
@@ -96,7 +96,7 @@ class Feedback:
                 sys.exit(kind)
 
 
-def polling(files: list, interval: int, timeout: int) -> NoReturn:
+def polling(files: list, interval: int, timeout: int) -> None:
     removed_files = []
     start = dt.now().timestamp()
 
@@ -141,7 +141,7 @@ def polling(files: list, interval: int, timeout: int) -> NoReturn:
         revived_indices = []
         for i, file in enumerate(removed_files):
             try:
-                stat = os.stat(file)
+                _ = os.stat(file)
                 Feedback.notify(Kind.ADD, file)
                 files.append(file)
                 revived_indices.append(i)
@@ -154,12 +154,12 @@ def polling(files: list, interval: int, timeout: int) -> NoReturn:
 
         now = dt.now().timestamp()
         # log(Kind.DEBUG, f"timeout: {now}, {start}, {timeout}, {now-start}")
-        if timeout > 0 and now-start >= timeout:
-            log(Kind.DEBUG, f"timeout passed: {now}-{start} = {now-start} >= {timeout}")
+        if timeout > 0 and now - start >= timeout:
+            log(Kind.DEBUG, f"timeout passed: {now}-{start} = {now - start} >= {timeout}")
             break
 
 
-def watching(files: list, recursive: bool, pattern: str, timeout: int) -> NoReturn:
+def watching(files: list, recursive: bool, pattern: str, timeout: int) -> None:
     pattern = re.compile(pattern)  # prepare pattern regex
 
     try:
@@ -246,7 +246,7 @@ def watching(files: list, recursive: bool, pattern: str, timeout: int) -> NoRetu
             watcher.add_watch(f, ALL_EVENTS, rec=recursive, auto_add=recursive, quiet=False)
 
     start = dt.now().timestamp()
-    poll_timeout = None if not timeout else (timeout*1000-500)
+    poll_timeout = None if not timeout else (timeout * 1000 - 500)
 
     while True:
         try:
@@ -265,8 +265,8 @@ def watching(files: list, recursive: bool, pattern: str, timeout: int) -> NoRetu
 
         now = dt.now().timestamp()
         # log(Kind.DEBUG, f"timeout: {now}, {start}, {timeout}, {now-start}")
-        if timeout > 0 and now-start >= timeout:
-            log(Kind.DEBUG, f"timeout passed: {now}-{start} = {now-start} >= {timeout}")
+        if timeout > 0 and now - start >= timeout:
+            log(Kind.DEBUG, f"timeout passed: {now}-{start} = {now - start} >= {timeout}")
             break
 
 
@@ -286,11 +286,11 @@ if __name__ == '__main__':
 
     type_group = parser.add_mutually_exclusive_group(required=True)
     type_group.add_argument('--polling', '-p', action='store_true',
-                            help='use polling instead of watching for file system events; ' +
-                                 'does not support watching directories')
+                            help='use polling instead of watching for file system events; '
+                                 + 'does not support watching directories')
     type_group.add_argument('--watcher', '-w', action='store_true', default=True,
-                            help='watch for file system events using pyinotify ' +
-                                 '(external dependency)')
+                            help='watch for file system events using pyinotify '
+                                 + '(external dependency)')
 
     parser.add_argument('--continued', '-c', action='store_true',
                         help='continue watching after a change has occurred')
@@ -299,13 +299,13 @@ if __name__ == '__main__':
     default_interval = 1
     parser.add_argument('--interval', '-i', action='store', default=default_interval,
                         const=default_interval, nargs='?', type=int,
-                        help='interval in seconds to use when polling (-p) or time for one ' +
-                        'run when watching in continuous mode (-c -w)')
+                        help='interval in seconds to use when polling (-p) or time for one '
+                             + 'run when watching in continuous mode (-c -w)')
     default_watch_time = 0
     parser.add_argument('--timeout', '-I', action='store', default=default_watch_time,
                         const=default_watch_time, nargs='?', type=int,
-                        help='time limit in seconds for one run when watching or polling ' +
-                        'in continuous mode (-c); disabled with 0')
+                        help='time limit in seconds for one run when watching or polling '
+                             + 'in continuous mode (-c); disabled with 0')
     parser.add_argument('--no-recursive', '-R', action='store_true',
                         help='do not watch directories recursively when using the watcher (-w)')
 
@@ -316,8 +316,8 @@ if __name__ == '__main__':
                         help='watch for files matching this glob pattern (requires -w)')
 
     parser.add_argument('--machine-readable', '-m', action='store_true',
-                        help='print messages in a machine-readable format ' +
-                        '("<time> <type> <file>")')
+                        help='print messages in a machine-readable format '
+                             + '("<time> <type> <file>")')
     parser.add_argument('--debug', '-d', action='store_true',
                         help='print detailed info for all events')
     parser.add_argument('files', type=str, nargs='+', help='files and/or directories to watch')
@@ -352,8 +352,9 @@ if __name__ == '__main__':
     if args.polling:
         if args.no_recursive:
             log(Kind.INFO, "-R ignored as polling does not support directories anyway")
-        if len(args.patterns) > 1 or (len(args.patterns) == 1 and
-                                      args.patterns[0] != default_pattern):
+        if len(args.patterns) > 1 or (
+            len(args.patterns) == 1 and args.patterns[0] != default_pattern
+        ):
             log(Kind.INFO, "patterns ignored when polling as all files are given explicitly")
     else:
         if args.interval != default_interval:
