@@ -178,8 +178,8 @@ def watching(files: list, recursive: bool, pattern: str, timeout: int) -> NoRetu
         from pyinotify import WatchManagerError, PyinotifyError
         from pyinotify import ALL_EVENTS, IN_DELETE, IN_DELETE_SELF, IN_CREATE, IN_CLOSE_WRITE
         from pyinotify import IN_MOVE_SELF, IN_MOVED_FROM
-    except ModuleNotFoundError:
-        log(Kind.ERROR, "watching requires pyinotify, use polling instead (-p)")
+    except ModuleNotFoundError as e:
+        log(Kind.ERROR, "watching requires pyinotify, use polling instead (-p)" + str(e))
         return 255
 
     class Added(Exception):
